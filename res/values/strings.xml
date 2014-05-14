@@ -4,5 +4,7 @@
     <string name="app_name">TempGridSensing</string>
     <string name="action_settings">Settings</string>
     <string name="hello_world">Hello world!</string>
+    <string name="debugLED">Off</string>
+    <string name="debugText">DEBUG:</string>
 
 </resources>
