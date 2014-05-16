@@ -10,11 +10,16 @@ import ioio.lib.util.android.IOIOActivity;
 import android.R.bool;
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.widget.ToggleButton;
 
 public class TempGridMain extends IOIOActivity {
@@ -23,13 +28,16 @@ public class TempGridMain extends IOIOActivity {
 	// UI
 	private ToggleButton button_;
 	private TextView debugText;
-	boolean debugFlag;
+	boolean debugFlag, eepromFlag = false;
 
 	// Sensor I2C
-	private TwiMaster twiEeprom, twiYtai;
-	private TwiMaster twiTemp;
+	private TwiMaster twi;
 	double sensortemp;
 
+	//Sensor Data & render
+	int[] irData = new int[64];
+	DrawView drawView;
+	
 	// MultiThreading
 	private Thread TempRead;
 	Thread thread = new Thread(TempRead);
@@ -41,6 +49,9 @@ public class TempGridMain extends IOIOActivity {
 		button_ = (ToggleButton) findViewById(R.id.button);
 		debugText = (TextView) findViewById(R.id.debugText);
 
+		/*drawView = new DrawView(this);
+        drawView.setBackgroundColor(Color.WHITE);
+        setContentView(drawView);*/
 	}
 
 	class Looper extends BaseIOIOLooper {
@@ -51,12 +62,7 @@ public class TempGridMain extends IOIOActivity {
 		protected void setup() throws ConnectionLostException {
 			led_ = ioio_.openDigitalOutput(0, true);
 
-			// twiEeprom = ioio_.openTwiMaster(0, TwiMaster.Rate.RATE_400KHz,
-			// false);
-			// twiTemp = ioio_.openTwiMaster(0, TwiMaster.Rate.RATE_1MHz,
-			// false);
-
-			twiYtai = ioio_.openTwiMaster(0, TwiMaster.Rate.RATE_400KHz, false);
+			twi = ioio_.openTwiMaster(0, TwiMaster.Rate.RATE_400KHz, false);
 
 			try {
 				TempRead thread_ = new TempRead(ioio_);
@@ -116,8 +122,10 @@ public class TempGridMain extends IOIOActivity {
 
 					Thread.sleep(5);
 
-					ReadEeprom(0x50, twiEeprom);
-					// ReadSensor(0x60, twiTemp);
+					if (!eepromFlag) {
+						ReadEeprom(0x50, twi);
+					}
+					ReadSensor(0x50, twi);
 
 				} catch (Exception e) {
 					Log.e("HelloIOIOPower", "Unexpected exception caught", e);
@@ -130,120 +138,223 @@ public class TempGridMain extends IOIOActivity {
 
 	public void ReadSensor(int address, TwiMaster port) {
 
-		byte[] request = new byte[] { 0x02, 0x00, 0x01 }; // Byte address to ask
-															// for sensor data
-		byte[] response = new byte[0x40]; // Byte to save sensor data
-		double dump; // Value after processing sensor data
+		int requestTempAddress = 0x00; // Byte address to ask for sensor data
+		byte[] responseTemp = new byte[64]; // Byte to save sensor data
 
-		try {
-			debugText.post(new Runnable() {
-				public void run() {
-					debugText.setText(":| Trying to read");
-				}
-			});
-			Log.d(TAG, ":| Trying to read");
+		sendDebugText(":| Trying to read Temp");
+		Log.d(TAG, ":| Trying to read Temp");
 
-			port.writeRead(address, false, request, request.length, response,
-					response.length);
-
-			for (int i = 0; i < response.length; i++) {
-				// dump = (double)(((response[i+1] & 0x007f) << 8)+
-				// response[i]);
-				Log.i(TAG, "EEPROM Dump " + i + " = " + response[i]);
+		if (requestTemp(requestTempAddress, responseTemp)) {
+			for (int i = 0; i<63; i++){
+				irData[i] = responseTemp[i];
 			}
-
-			sendDebugText(":) success reading");
-			Log.d(TAG, ":) success reading");
-
-		} catch (ConnectionLostException e) {
-			Log.d(TAG, ":( read ConnLost");
-			e.printStackTrace();
-		} catch (InterruptedException e) {
-			Log.d(TAG, ":( read InterrExcept");
-			e.printStackTrace();
+			sendDebugText(":) Temp Value = " + responseTemp);
+			Log.i(TAG, ":) Temp Value = " + responseTemp);
 		}
 	}
 
-	private void sendDebugText(final String message) {
+	boolean requestTemp(int requestTempAddress, byte[] result) {
 
-		debugText.post(new Runnable() {
-			public void run() {
-				debugText.setText(message);
-			}
-		});
-
+		//byte request[] = new byte[] { command, Start Address, Address Step, Number of Reads };
+		byte request[] = new byte[] { 0x02, (byte) requestTempAddress, 0x01, 0x40 };
+		try {
+			return twi.writeRead(0x60, false, request, request.length, result,
+					result.length);
+		} catch (ConnectionLostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		}
 	}
 
 	public void ReadEeprom(int address, TwiMaster port) {
 
-		byte[] request = new byte[] { 0x00 }; // Byte address to ask for sensor
-												// data
-		byte[] response = new byte[1]; // Byte to save sensor data
-
-		byte[] getData = new byte[] { 0x50 }; // Byte address to ask for sensor
-												// data
-		byte[] dataDump = new byte[0xff]; // Byte to save sensor data
+		int requestEeprom = 0x00; // Byte address to ask for sensor data
+		byte[] responseEeprom1 = new byte[125]; // Byte to save sensor data
+		byte[] responseEeprom2 = new byte[125]; // Byte to save sensor data
+		int trimVal = 0;
+		int configValF5 = 0;
+		int configValF6 = 0;
 
 		// try {
 		sendDebugText(":| Trying to read Eeprom");
-		Log.d(TAG, ":| Trying to read");
+		Log.d(TAG, ":| Trying to read Eeprom");
 
 		// Then, you can call for example:
 
-		byte[] resultYtai = new byte[125];
-		if (readEepromYtai(0x00, resultYtai)) {
-			for (int i = 0; i < resultYtai.length; i++) {
-				Log.i(TAG, "EEPROM Dump " + i + " = " + resultYtai[i]);
+		if (eepromRequest(requestEeprom, responseEeprom1)) {
+			for (int i = 0; i < responseEeprom1.length; i++) {
+				Log.i(TAG, "EEPROM Dump " + i + " = " + responseEeprom1[i]);
 			}
 		}
 
-		byte[] resultYtai2 = new byte[125];
-		if (readEepromYtai(125, resultYtai2)) {
-			for (int i = 0; i < resultYtai2.length; i++) {
-				Log.i(TAG, "EEPROM Dump2 " + (i + resultYtai2.length) + " = "
-						+ resultYtai2[i]);
+		if (eepromRequest(125, responseEeprom2)) {
+			for (int i = 0; i < responseEeprom2.length; i++) {
+				Log.i(TAG, "EEPROM Dump2 " + (i + responseEeprom2.length)
+						+ " = " + responseEeprom2[i]);
+				if (i + responseEeprom2.length == 0xF7) {
+					trimVal = responseEeprom2[i];
+					Log.i(TAG, "Trimming Value =" + responseEeprom2[i]);
+				}
+				if (i + responseEeprom2.length == 0xF5) {
+					configValF5 = responseEeprom2[i];
+					Log.i(TAG, "Config Value F5=" + responseEeprom2[i]);
+				}
+				if (i + responseEeprom2.length == 0xF6) {
+					configValF6 = responseEeprom2[i];
+					Log.i(TAG, "Config Value F6=" + responseEeprom2[i]);
+				}
 			}
 		}
 
-		/*
-		 * if (port.writeRead(address, false,
-		 * request,request.length,response,response.length)){ Log.i(TAG,
-		 * ":) Got Initial response"); for(int i=0; i<response.length; i++){
-		 * //dump = (int)(((response[i] & 0x007f) << 8)+ response[i]);
-		 * Log.i(TAG, "EEPROM Dump "+i+" = "+ response[i]); if(i == 0xf7){
-		 * Log.i(TAG, "Triming Value = "+ response[i]); } } }else{ Log.i(TAG,
-		 * ":( NO response"); }
-		 */
+		sendDebugText(":) success reading Eeprom");
+		sendDebugText("Trimming Value =" + trimVal);
+		sendToast("Trimming Value = " + trimVal);
+		Log.d(TAG, ":) success reading Eeprom");
 
-		/*
-		 * if (port.writeRead(address, false,
-		 * request,request.length,response,response.length)){ Log.i(TAG,
-		 * ":) Got Initial response");
-		 * 
-		 * if (port.writeRead(address, false,
-		 * getData,getData.length,dataDump,dataDump.length)){ Log.i(TAG,
-		 * ":) Got Data response");
-		 * 
-		 * for(int i=0; i<dataDump.length; i++){ //dump = (int)(((response[i] &
-		 * 0x007f) << 8)+ response[i]); Log.i(TAG, "EEPROM Dump "+i+" = "+
-		 * dataDump[i]); } } }
-		 */
+		// Write Trim Value
+		sendDebugText(":| Trying to write Trim Value");
+		Log.d(TAG, ":| Trying to write Trim Value");
 
-		sendDebugText(":) success reading");
-		Log.d(TAG, ":) success reading");
+		if (writeTrimVal(trimVal)) {
+			sendDebugText(":) Trim Value Written");
+			Log.i(TAG, ":) Trim Value Written");
 
-		/*
-		 * } catch (ConnectionLostException e) { Log.d(TAG, ":( read ConnLost");
-		 * e.printStackTrace(); } catch (InterruptedException e) { Log.d(TAG,
-		 * ":( read InterrExcept"); e.printStackTrace(); }
-		 */
+		} else {
+			Log.i(TAG, ":( NO response");
+		}
+
+		// Read Oscillator trimming register
+		sendDebugText(":| Trying to Read Oscillator trimming Register");
+		Log.d(TAG, ":| Trying to Read Oscillator trimming Register");
+
+		int requestOscTrim = 0x93; // Byte address to ask for sensor data
+		byte[] responseOscTrim = new byte[1]; // Byte to save sensor data
+
+		if (readOscTrim(requestOscTrim, responseOscTrim)) {
+			sendDebugText(":) Oscillator trimming Register Read = "
+					+ responseOscTrim);
+			sendToast("Oscillator trimming Register = " + responseOscTrim[0]);
+			Log.i(TAG, ":) Oscillator trimming Register Read = "
+					+ responseOscTrim);
+
+		} else {
+			Log.i(TAG, ":( NO response");
+		}
+
+		// Write Configuration Values
+		sendDebugText(":| Trying to write Configuration Value");
+		Log.d(TAG, ":| Trying to write Configuration Value");
+
+		if (writeConfigVal(configValF5, configValF6)) {
+			sendDebugText(":) Configuration Value Written");
+			sendToast("Configuration Value written= " + configValF5
+					+ configValF6);
+			Log.i(TAG, ":) Configuration Value Written");
+
+		} else {
+			Log.i(TAG, ":( NO response");
+		}
+
+		// Read Config. Register
+		sendDebugText(":| Trying to Read Config. Register");
+		Log.d(TAG, ":| Trying to Read Config. Register");
+
+		int requestConfigReg = 0x92; // Byte address to ask for sensor data
+		byte[] responseConfigReg = new byte[1]; // Byte to save sensor data
+
+		if (readConfigReg(requestConfigReg, responseConfigReg)) {
+			sendDebugText(":) Config. Register Read = " + responseConfigReg);
+			sendToast("Configuration Value Read= " + responseConfigReg[0]);
+			Log.i(TAG, ":) Config. Register Read = " + responseConfigReg);
+
+		} else {
+			Log.i(TAG, ":( NO response");
+		}
+
+		eepromFlag = true;
 	}
 
-	boolean readEepromYtai(int start_address, byte[] result) {
-		byte requestYtai[] = new byte[] { (byte) start_address };
+	boolean eepromRequest(int start_address, byte[] result) {
+		byte request[] = new byte[] { (byte) start_address };
 		try {
-			return twiYtai.writeRead(0x50, false, requestYtai, 1, result,
+			return twi
+					.writeRead(0x50, false, request, 1, result, result.length);
+		} catch (ConnectionLostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		}
+	}
+
+	boolean writeTrimVal(int trimVal) {
+
+		byte[] command = new byte[] { (byte) 0x60, 0x04,
+				(byte) (trimVal - 0xAA), (byte) trimVal, 0x56, 0x00 };
+		byte[] result = new byte[1];
+		try {
+			return twi.writeRead(0x50, false, command, command.length, result,
 					result.length);
+		} catch (ConnectionLostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		}
+	}
+
+	boolean readOscTrim(int start_address, byte[] result) {
+		byte request[] = new byte[] { (byte) start_address, 0x02 };
+		try {
+			return twi.writeRead(0x50, false, request, request.length, result,
+					result.length);
+		} catch (ConnectionLostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		}
+	}
+
+	boolean writeConfigVal(int configF5, int configF6) {
+
+		byte[] command = new byte[] { 0x60, 0x03, (byte) (configF5 - 0x55),
+				(byte) configF5, (byte) (configF6 - 0x55), (byte) configF6 };
+
+		byte[] result = new byte[1];
+		try {
+			return twi.writeRead(0x50, false, command, command.length, result,
+					result.length);
+		} catch (ConnectionLostException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			return false;
+		}
+	}
+
+	boolean readConfigReg(int start_address, byte[] result) {
+		byte request[] = new byte[] { (byte) start_address, 0x02 };
+		try {
+			return twi
+					.writeRead(0x50, false, request, request.length, result, result.length);
 		} catch (ConnectionLostException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
@@ -294,6 +405,27 @@ public class TempGridMain extends IOIOActivity {
 		}
 	}
 
+	private void sendDebugText(final String message) {
+
+		debugText.post(new Runnable() {
+			public void run() {
+				debugText.setText(message);
+			}
+		});
+
+	}
+
+	private void sendToast(final String message) {
+
+		debugText.post(new Runnable() {
+			public void run() {
+				Toast.makeText(getApplicationContext(), message,
+						Toast.LENGTH_SHORT).show();
+			}
+		});
+
+	}
+
 	@Override
 	protected void onStart() {
 		// TODO Auto-generated method stub
@@ -303,8 +435,8 @@ public class TempGridMain extends IOIOActivity {
 	@Override
 	protected void onStop() {
 		// twiEeprom.close();
-		if (twiYtai != null)
-			twiYtai.close();
+		if (twi != null)
+			twi.close();
 		super.onStop();
 	}
 }
