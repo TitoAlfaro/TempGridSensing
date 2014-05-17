@@ -33,6 +33,13 @@
         android:layout_toRightOf="@+id/textView1"
         android:text="@string/debugText" />
 
-   
+    <RelativeLayout
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@+id/button"
+        android:layout_marginTop="20dp"
+        android:id="@+id/rect" >
+        "
+    </RelativeLayout>
 
 </RelativeLayout>

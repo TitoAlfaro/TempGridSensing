@@ -7,17 +7,16 @@ import ioio.lib.api.exception.ConnectionLostException;
 import ioio.lib.util.BaseIOIOLooper;
 import ioio.lib.util.IOIOLooper;
 import ioio.lib.util.android.IOIOActivity;
-import android.R.bool;
 import android.annotation.SuppressLint;
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
-import android.os.PowerManager;
 import android.util.Log;
 import android.view.View;
+import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ToggleButton;
@@ -37,21 +36,54 @@ public class TempGridMain extends IOIOActivity {
 	//Sensor Data & render
 	int[] irData = new int[64];
 	DrawView drawView;
+	Bitmap bg = Bitmap.createBitmap(480, 800, Bitmap.Config.ARGB_8888);
+	Canvas canvas = new Canvas(bg);
+	final int rows = 4;
+	final int cols = 16;
+	float[] source = new float[cols*rows];
+	float [][] dest = new float [4][16];
 	
 	// MultiThreading
 	private Thread TempRead;
 	Thread thread = new Thread(TempRead);
 
-	@Override
+	@SuppressLint("NewApi") @Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_temp_grid_main);
+				
 		button_ = (ToggleButton) findViewById(R.id.button);
 		debugText = (TextView) findViewById(R.id.debugText);
 
-		/*drawView = new DrawView(this);
-        drawView.setBackgroundColor(Color.WHITE);
-        setContentView(drawView);*/
+		Paint paint = new Paint();
+		RelativeLayout rl = (RelativeLayout) findViewById(R.id.rect);
+		rl.setBackgroundDrawable(new BitmapDrawable(bg));
+
+	}
+
+	private void DrawGrid() {
+		Paint paint = new Paint();
+		
+		int colWidth = 30;
+		int rowHeight = 90;
+		
+		//double for-loop to create Grid
+		int k=0;
+		for (int j=0; j<rows; j++){
+			for(int i=0; i<cols; i++){
+				if (k<irData.length){
+					dest[j][i] = irData[k];
+					Log.i(TAG, ":) Dest Value ("+i+","+j+")= " + dest[j][i]);
+					float colorV = map(dest[j][i], 0, 100, 0, 255);
+					paint.setColor(Color.argb(255,(int)colorV,50,50));
+					canvas.drawRect(i*(colWidth+2), j*(rowHeight+3), (i*(colWidth+2))+colWidth, (j*(rowHeight+3))+rowHeight, paint);
+					paint.setColor(Color.YELLOW); 
+					paint.setTextSize(10); 
+					canvas.drawText("V"+colorV,i*(colWidth+5), j*(rowHeight+45),paint);
+					k++;
+				}
+			}
+		}
 	}
 
 	class Looper extends BaseIOIOLooper {
@@ -126,6 +158,7 @@ public class TempGridMain extends IOIOActivity {
 						ReadEeprom(0x50, twi);
 					}
 					ReadSensor(0x50, twi);
+					DrawGrid();
 
 				} catch (Exception e) {
 					Log.e("HelloIOIOPower", "Unexpected exception caught", e);
@@ -145,11 +178,11 @@ public class TempGridMain extends IOIOActivity {
 		Log.d(TAG, ":| Trying to read Temp");
 
 		if (requestTemp(requestTempAddress, responseTemp)) {
-			for (int i = 0; i<63; i++){
+			for (int i=0; i<63; i++){
 				irData[i] = responseTemp[i];
+				sendDebugText(":) Temp Value = " + irData[i]);
+				Log.i(TAG, ":) Temp Value = " + irData[i]);
 			}
-			sendDebugText(":) Temp Value = " + responseTemp);
-			Log.i(TAG, ":) Temp Value = " + responseTemp);
 		}
 	}
 
@@ -424,6 +457,16 @@ public class TempGridMain extends IOIOActivity {
 			}
 		});
 
+	}
+	
+	float map(float x, float in_min, float in_max, float out_min, float out_max) {
+		if (x < in_min)
+			return out_min;
+		else if (x > in_max)
+			return out_max;
+		else
+			return (x - in_min) * (out_max - out_min) / (in_max - in_min)
+					+ out_min;
 	}
 
 	@Override
